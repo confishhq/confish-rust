@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        toolchain: [stable, "1.85"]
+        toolchain: [stable, "1.86"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -23,5 +23,5 @@ jobs:
         if: matrix.toolchain == 'stable'
       - run: cargo clippy --all-targets -- -D warnings
         if: matrix.toolchain == 'stable'
-      - run: cargo build --all-features
-      - run: cargo test --all-features
+      - run: cargo build --locked --all-features
+      - run: cargo test --locked --all-features

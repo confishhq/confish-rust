@@ -2,7 +2,7 @@
 name = "confish"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.86"
 description = "Official Rust SDK for confish — typed configuration, actions, and webhooks."
 license = "MIT"
 repository = "https://github.com/confishhq/confish-rust"

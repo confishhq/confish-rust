@@ -21,7 +21,7 @@ By default the SDK uses `rustls`. For native TLS, opt in:
 confish = { version = "0.2", default-features = false, features = ["native-tls"] }
 ```
 
-Requires Rust 1.85+.
+Requires Rust 1.86+.
 
 ## Quick start
 
