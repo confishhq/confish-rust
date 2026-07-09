@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Log severity levels accepted by the logging API.
+/// Log severity levels accepted by the logging API (the full RFC 5424 set).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
@@ -13,6 +13,7 @@ pub enum LogLevel {
     Error,
     Critical,
     Alert,
+    Emergency,
 }
 
 /// An action's lifecycle status.
@@ -34,6 +35,31 @@ pub struct ActionUpdate {
     pub data: Option<serde_json::Value>,
     #[serde(default)]
     pub timestamp: Option<String>,
+}
+
+/// An item returned by the feeds API.
+///
+/// `data` is generic so callers can decode items into their own types — use
+/// [`FeedItem<serde_json::Value>`] to keep it untyped.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FeedItem<T> {
+    pub id: String,
+    pub external_id: String,
+    pub data: T,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
+/// Counts returned by [`Feed::replace`](crate::Feed::replace).
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct FeedReplaceResult {
+    pub created: u64,
+    pub updated: u64,
+    pub deleted: u64,
 }
 
 /// An action returned by the actions API.

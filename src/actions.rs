@@ -51,8 +51,8 @@ impl Actions {
             .await
     }
 
-    /// Append a timeline update visible in the dashboard.
-    pub async fn update(
+    /// Append a progress note to the action's timeline, visible in the dashboard.
+    pub async fn progress(
         &self,
         action_id: &str,
         message: impl Into<String>,
@@ -214,7 +214,7 @@ impl Actions {
     }
 }
 
-/// Passed to handlers so they can append timeline updates.
+/// Passed to handlers so they can append progress notes to the action's timeline.
 pub struct ActionContext {
     actions: Actions,
     action_id: String,
@@ -224,13 +224,13 @@ pub struct ActionContext {
 }
 
 impl ActionContext {
-    /// Append a timeline update visible in the dashboard.
-    pub async fn update(
+    /// Append a progress note to the action's timeline, visible in the dashboard.
+    pub async fn progress(
         &self,
         message: impl Into<String>,
         data: Option<serde_json::Value>,
     ) -> Result<Action> {
-        self.actions.update(&self.action_id, message, data).await
+        self.actions.progress(&self.action_id, message, data).await
     }
 }
 

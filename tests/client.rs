@@ -1,4 +1,4 @@
-use confish::{Client, Error};
+use confish::{Client, Error, LogLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use wiremock::matchers::{header, method, path};
@@ -35,7 +35,7 @@ async fn fetch_returns_typed_config() {
     }
 
     let client = build_client(&server.uri());
-    let config: MyConfig = client.fetch().await.expect("fetch");
+    let config: MyConfig = client.config().fetch().await.expect("fetch");
     assert_eq!(config.site_name, "My App");
     assert_eq!(config.max_upload_mb, 25);
     assert!(!config.maintenance_mode);
@@ -57,6 +57,7 @@ async fn update_wraps_values() {
 
     let client = build_client(&server.uri());
     let _: serde_json::Value = client
+        .config()
         .update(&Patch {
             maintenance_mode: true,
         })
@@ -70,6 +71,28 @@ async fn update_wraps_values() {
 }
 
 #[tokio::test]
+async fn replace_wraps_values() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/c/env_test"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+
+    let client = build_client(&server.uri());
+    let _: serde_json::Value = client
+        .config()
+        .replace(&json!({"site_name": "My App"}))
+        .await
+        .expect("replace");
+
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body, json!({"values": {"site_name": "My App"}}));
+}
+
+#[tokio::test]
 async fn auth_error_on_401() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -78,8 +101,24 @@ async fn auth_error_on_401() {
         .await;
 
     let client = build_client(&server.uri());
-    let result: Result<serde_json::Value, _> = client.fetch().await;
+    let result: Result<serde_json::Value, _> = client.config().fetch().await;
     assert!(matches!(result, Err(Error::Auth { .. })));
+}
+
+#[tokio::test]
+async fn not_found_error_on_404() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"error": "Not found"})))
+        .mount(&server)
+        .await;
+
+    let client = build_client(&server.uri());
+    let result: Result<serde_json::Value, _> = client.config().fetch().await;
+    match result {
+        Err(Error::NotFound { message, .. }) => assert_eq!(message, "Not found"),
+        other => panic!("expected NotFound, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -94,7 +133,7 @@ async fn validation_error_exposes_field_errors() {
         .await;
 
     let client = build_client(&server.uri());
-    let result: Result<serde_json::Value, _> = client.update(&json!({"x": 1})).await;
+    let result: Result<serde_json::Value, _> = client.config().update(&json!({"x": 1})).await;
     match result {
         Err(Error::Validation { errors, .. }) => {
             assert_eq!(
@@ -124,7 +163,7 @@ async fn rate_limit_retries_then_succeeds() {
         .await;
 
     let client = build_client(&server.uri());
-    let result: serde_json::Value = client.fetch().await.expect("fetch");
+    let result: serde_json::Value = client.config().fetch().await.expect("fetch");
     assert_eq!(result, json!({"ok": true}));
 }
 
@@ -142,7 +181,7 @@ async fn rate_limit_exhausts_retries() {
         .await;
 
     let client = build_client(&server.uri());
-    let result: Result<serde_json::Value, _> = client.fetch().await;
+    let result: Result<serde_json::Value, _> = client.config().fetch().await;
     match result {
         Err(Error::RateLimit {
             limit: Some(60), ..
@@ -152,7 +191,7 @@ async fn rate_limit_exhausts_retries() {
 }
 
 #[tokio::test]
-async fn logger_sends_level_and_context() {
+async fn logs_level_method_sends_level_and_context() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/c/env_test/log"))
@@ -162,7 +201,7 @@ async fn logger_sends_level_and_context() {
 
     let client = build_client(&server.uri());
     let id = client
-        .logger()
+        .logs()
         .info("hello", Some(json!({"user_id": 1})))
         .await
         .expect("log");
@@ -173,6 +212,53 @@ async fn logger_sends_level_and_context() {
     assert_eq!(
         body,
         json!({"level": "info", "message": "hello", "context": {"user_id": 1}})
+    );
+}
+
+#[tokio::test]
+async fn logs_write_sends_explicit_level() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/c/env_test/log"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "log_2"})))
+        .mount(&server)
+        .await;
+
+    let client = build_client(&server.uri());
+    let id = client
+        .logs()
+        .write(LogLevel::Critical, "system down", None)
+        .await
+        .expect("log");
+    assert_eq!(id, "log_2");
+
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body, json!({"level": "critical", "message": "system down"}));
+}
+
+#[tokio::test]
+async fn logs_emergency_level() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/c/env_test/log"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "log_3"})))
+        .mount(&server)
+        .await;
+
+    let client = build_client(&server.uri());
+    let id = client
+        .logs()
+        .emergency("everything is on fire", None)
+        .await
+        .expect("log");
+    assert_eq!(id, "log_3");
+
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(
+        body,
+        json!({"level": "emergency", "message": "everything is on fire"})
     );
 }
 

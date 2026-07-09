@@ -15,7 +15,7 @@
 //!
 //! # async fn run() -> confish::Result<()> {
 //! let client = Client::builder("env_id", "confish_sk_...").build()?;
-//! let config: MyConfig = client.fetch().await?;
+//! let config: MyConfig = client.config().fetch().await?;
 //! println!("{config:?}");
 //! # Ok(())
 //! # }
@@ -25,13 +25,19 @@
 
 mod actions;
 mod client;
+mod config;
 mod error;
+mod feeds;
 mod http;
+mod logs;
 mod types;
 
 pub mod webhook;
 
 pub use actions::{ActionContext, Actions, ConsumeOptions, ErrorCallback};
-pub use client::{Client, ClientBuilder, Logger, DEFAULT_BASE_URL};
+pub use client::{Client, ClientBuilder, DEFAULT_BASE_URL};
+pub use config::Config;
 pub use error::{Error, Result};
-pub use types::{Action, ActionStatus, ActionUpdate, LogLevel};
+pub use feeds::{Feed, FeedItemInput};
+pub use logs::Logs;
+pub use types::{Action, ActionStatus, ActionUpdate, FeedItem, FeedReplaceResult, LogLevel};

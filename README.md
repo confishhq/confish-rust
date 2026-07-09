@@ -1,23 +1,24 @@
 # confish
 
-Official Rust SDK for [confish](https://confi.sh) — typed configuration, actions, and webhook verification.
+Official Rust SDK for [confish](https://confi.sh) — typed configuration, feeds, actions, and webhook verification.
 
 - Async-first, built on `tokio` + `reqwest`
-- Typed configuration via the standard `serde::Deserialize` generic — `client.fetch::<MyConfig>().await?`
+- Typed configuration via the standard `serde::Deserialize` generic — `client.config().fetch::<MyConfig>().await?`
+- Live feeds with declarative upserts and optional TTLs
 - Long-running action consumer with `CancellationToken` and bounded concurrency
-- HMAC-SHA256 webhook verification
+- HMAC-SHA256 webhook verification that returns the parsed payload
 
 ## Install
 
 ```toml
 [dependencies]
-confish = "0.1"
+confish = "0.2"
 ```
 
 By default the SDK uses `rustls`. For native TLS, opt in:
 
 ```toml
-confish = { version = "0.1", default-features = false, features = ["native-tls"] }
+confish = { version = "0.2", default-features = false, features = ["native-tls"] }
 ```
 
 Requires Rust 1.75+.
@@ -44,7 +45,7 @@ async fn main() -> confish::Result<()> {
     )
     .build()?;
 
-    let config: MyConfig = client.fetch().await?;
+    let config: MyConfig = client.config().fetch().await?;
     println!("{config:?}");
     Ok(())
 }
@@ -54,15 +55,15 @@ async fn main() -> confish::Result<()> {
 
 ```rust
 // GET /c/{env_id}
-let config: MyConfig = client.fetch().await?;
+let config: MyConfig = client.config().fetch().await?;
 
 // PATCH — only listed fields change
 #[derive(serde::Serialize)]
 struct Patch { maintenance_mode: bool }
-let updated: MyConfig = client.update(&Patch { maintenance_mode: true }).await?;
+let updated: MyConfig = client.config().update(&Patch { maintenance_mode: true }).await?;
 
 // PUT — replaces everything; omitted fields reset to defaults
-let new_config: MyConfig = client.replace(&MyConfig {
+let new_config: MyConfig = client.config().replace(&MyConfig {
     site_name: "My App".into(),
     max_upload_mb: 50,
     maintenance_mode: false,
@@ -72,20 +73,68 @@ let new_config: MyConfig = client.replace(&MyConfig {
 
 > Write access must be enabled in environment settings before `update` and `replace` will work.
 
+## Feeds
+
+A feed holds your environment's live state — active jobs, crawl results, open incidents — keyed by an external ID you choose. `client.feed(slug)` returns a bound handle; construction performs no HTTP.
+
+```rust
+use confish::FeedItem;
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+#[derive(Serialize, Deserialize)]
+struct CrawlResult { url: String, pages: u32 }
+
+let crawls = client.feed("crawl-results");
+
+// PUT — create-or-replace by external ID, with an optional TTL
+crawls.set(
+    "sitemap-crawl",
+    &CrawlResult { url: "https://example.com/sitemap.xml".into(), pages: 214 },
+    Some(Duration::from_secs(86400)),
+).await?;
+
+// GET — live (non-expired) items, newest first
+let items: Vec<FeedItem<CrawlResult>> = crawls.list().await?;
+
+// DELETE — idempotent; deleting an item that's already gone succeeds
+crawls.delete("sitemap-crawl").await?;
+```
+
+`set` is declarative: the item's data becomes exactly what you send, and the TTL becomes exactly what you pass. **Passing `None` for `ttl` makes the item permanent — it clears any TTL set by a previous call.** TTLs are sent as whole seconds and must be between 1 second and 30 days; `external_id` must be 255 characters or fewer.
+
+### Replacing the whole feed
+
+`replace` is a collection PUT built for sync-style cron jobs that push their full dataset in one request — the feed becomes exactly the items you send. Existing external IDs update in place, new ones are created, and **anything absent is deleted**; an empty slice clears the feed. It's all-or-nothing: duplicate external IDs, payloads over the plan's item cap, or any schema-invalid item are rejected with `Error::Validation` and nothing is written.
+
+```rust
+use confish::FeedItemInput;
+use serde_json::json;
+use std::time::Duration;
+
+let result = client.feed("jobs").replace(&[
+    FeedItemInput::new("db-backup", json!({"status": "running"}), Some(Duration::from_secs(3600))),
+    FeedItemInput::new("sitemap-crawl", json!({"status": "queued"}), None),
+]).await?;
+println!("created {}, updated {}, deleted {}", result.created, result.updated, result.deleted);
+```
+
+An unknown feed slug returns `Error::NotFound`. A full feed or an item that fails the feed's schema returns `Error::Validation`.
+
 ## Logging
 
 ```rust
 use confish::LogLevel;
 use serde_json::json;
 
-client.logger().info("Worker started", Some(json!({"region": "eu-west-1"}))).await?;
-client.logger().error("Job failed", Some(json!({"job_id": "abc"}))).await?;
+client.logs().info("Worker started", Some(json!({"region": "eu-west-1"}))).await?;
+client.logs().error("Job failed", Some(json!({"job_id": "abc"}))).await?;
 
-// Or directly:
-let log_id = client.log(LogLevel::Critical, "system down", None).await?;
+// Or with an explicit level:
+let log_id = client.logs().write(LogLevel::Critical, "system down", None).await?;
 ```
 
-Levels: `Debug`, `Info`, `Notice`, `Warning`, `Error`, `Critical`, `Alert`.
+Levels (the full RFC 5424 set): `Debug`, `Info`, `Notice`, `Warning`, `Error`, `Critical`, `Alert`, `Emergency`. Because the levels follow RFC 5424 (syslog), they map cleanly onto the level vocabularies of the `log` and `tracing` crates.
 
 ## Actions
 
@@ -109,10 +158,10 @@ client
     .consume(
         |action: Action, ctx: ActionContext| async move {
             match action.kind.as_str() {
-                "place_order" => {
-                    ctx.update("Submitting order", Some(json!({"params": action.params}))).await?;
+                "run_crawl" => {
+                    ctx.progress("Crawling sitemap", Some(json!({"params": action.params}))).await?;
                     // ... do work ...
-                    Ok(Some(json!({"order_id": "abc123", "filled_price": 66980.0})))
+                    Ok(Some(json!({"pages_indexed": 214, "duration_ms": 5320})))
                 }
                 other => Err(format!("unknown action type: {other}").into()),
             }
@@ -141,8 +190,8 @@ You can also drive the lifecycle manually:
 ```rust
 let actions = client.actions().list().await?;
 client.actions().ack("action_id").await?;
-client.actions().update("action_id", "progress", Some(json!({"step": 2}))).await?;
-client.actions().complete("action_id", Some(json!({"order_id": "abc"}))).await?;
+client.actions().progress("action_id", "Closing 3 stale incidents", Some(json!({"step": 2}))).await?;
+client.actions().complete("action_id", Some(json!({"closed": 3}))).await?;
 client.actions().fail("action_id", Some(json!({"error": "timeout"}))).await?;
 ```
 
@@ -150,29 +199,40 @@ To extract typed params:
 
 ```rust
 #[derive(serde::Deserialize)]
-struct OrderParams { symbol: String, size: f64 }
+struct CrawlParams { url: String, max_depth: u32 }
 
 if let Some(params) = action.params.clone() {
-    let order: OrderParams = serde_json::from_value(params)?;
+    let crawl: CrawlParams = serde_json::from_value(params)?;
 }
 ```
 
 ## Webhook verification
 
+`verify` checks the signature and parses the payload in one operation — the Stripe pattern. On success you get the parsed `Payload`; on failure a `WebhookError` that says why (`InvalidSignature` vs `TimestampOutsideTolerance`), so the failure mode can't be ignored.
+
 ```rust
-use confish::webhook::{verify, VerifyOptions};
+use confish::webhook::{verify, VerifyOptions, WebhookError};
 
 async fn handler(req: actix_web::HttpRequest, body: actix_web::web::Bytes) -> actix_web::HttpResponse {
     let signature = req.headers().get("x-confish-signature")
         .and_then(|v| v.to_str().ok());
     let secret = std::env::var("CONFISH_WEBHOOK_SECRET").unwrap();
 
-    if !verify(&body, signature, &secret, &VerifyOptions::default()) {
-        return actix_web::HttpResponse::Unauthorized().body("invalid signature");
-    }
+    let payload = match verify(&body, signature, &secret, &VerifyOptions::default()) {
+        Ok(payload) => payload,
+        Err(WebhookError::TimestampOutsideTolerance { .. }) => {
+            return actix_web::HttpResponse::Unauthorized().body("stale webhook");
+        }
+        Err(_) => {
+            return actix_web::HttpResponse::Unauthorized().body("invalid signature");
+        }
+    };
 
-    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    // handle payload ...
+    match payload.event.as_str() {
+        "environment.updated" => { /* reload config ... */ }
+        "environment.deleted" => { /* clean up ... */ }
+        _ => {}
+    }
     actix_web::HttpResponse::Ok().finish()
 }
 ```
@@ -184,8 +244,9 @@ async fn handler(req: actix_web::HttpRequest, body: actix_web::web::Bytes) -> ac
 ```rust
 use confish::Error;
 
-match client.fetch::<serde_json::Value>().await {
+match client.config().fetch::<serde_json::Value>().await {
     Ok(_) => {}
+    Err(Error::NotFound { message, .. }) => eprintln!("not found: {message}"),
     Err(Error::RateLimit { retry_after, .. }) => {
         eprintln!("retry after {retry_after:?}s");
     }

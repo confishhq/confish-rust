@@ -92,6 +92,30 @@ async fn complete_without_result() {
 }
 
 #[tokio::test]
+async fn progress_posts_to_update_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/c/env_test/actions/a1/update"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pending_action_json("a1")))
+        .mount(&server)
+        .await;
+
+    let client = build_client(&server.uri());
+    client
+        .actions()
+        .progress("a1", "Submitting order", Some(json!({"step": 2})))
+        .await
+        .expect("progress");
+
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(
+        body,
+        json!({"message": "Submitting order", "data": {"step": 2}})
+    );
+}
+
+#[tokio::test]
 async fn ack_returns_conflict_on_409() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

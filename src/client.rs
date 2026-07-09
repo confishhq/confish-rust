@@ -1,13 +1,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::Method;
-use serde::{de::DeserializeOwned, Serialize};
-
 use crate::actions::Actions;
+use crate::config::Config;
 use crate::error::Result;
+use crate::feeds::Feed;
 use crate::http::HttpClient;
-use crate::types::LogLevel;
+use crate::logs::Logs;
 
 /// The default API base URL (`https://confi.sh`).
 pub const DEFAULT_BASE_URL: &str = "https://confi.sh";
@@ -135,83 +134,16 @@ impl Client {
         ClientBuilder::new(env_id, api_key)
     }
 
-    /// Fetch the environment's typed configuration.
-    pub async fn fetch<T: DeserializeOwned>(&self) -> Result<T> {
-        self.inner
-            .http
-            .request(
-                Method::GET,
-                &format!("/c/{}", self.inner.env_id),
-                None::<&()>,
-            )
-            .await
-    }
-
-    /// Partially update configuration values (PATCH). Returns the full updated config.
-    pub async fn update<T: DeserializeOwned, V: Serialize>(&self, values: &V) -> Result<T> {
-        let body = serde_json::json!({ "values": values });
-        self.inner
-            .http
-            .request(
-                Method::PATCH,
-                &format!("/c/{}", self.inner.env_id),
-                Some(&body),
-            )
-            .await
-    }
-
-    /// Replace all configuration values (PUT). Omitted fields reset to defaults.
-    pub async fn replace<T: DeserializeOwned, V: Serialize>(&self, values: &V) -> Result<T> {
-        let body = serde_json::json!({ "values": values });
-        self.inner
-            .http
-            .request(
-                Method::PUT,
-                &format!("/c/{}", self.inner.env_id),
-                Some(&body),
-            )
-            .await
-    }
-
-    /// Send a log entry. Returns the new log entry's ID.
-    pub async fn log(
-        &self,
-        level: LogLevel,
-        message: impl Into<String>,
-        context: Option<serde_json::Value>,
-    ) -> Result<String> {
-        #[derive(Serialize)]
-        struct Body {
-            level: LogLevel,
-            message: String,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            context: Option<serde_json::Value>,
-        }
-        #[derive(serde::Deserialize)]
-        struct Resp {
-            id: String,
-        }
-        let body = Body {
-            level,
-            message: message.into(),
-            context,
-        };
-        let resp: Resp = self
-            .inner
-            .http
-            .request(
-                Method::POST,
-                &format!("/c/{}/log", self.inner.env_id),
-                Some(&body),
-            )
-            .await?;
-        Ok(resp.id)
-    }
-
-    /// Convenience wrapper around [`Client::log`] with one method per level.
+    /// Access the configuration namespace.
     #[must_use]
-    pub fn logger(&self) -> Logger<'_> {
-        Logger { client: self }
+    pub fn config(&self) -> Config {
+        Config::new(self.clone())
+    }
+
+    /// Access the logs namespace.
+    #[must_use]
+    pub fn logs(&self) -> Logs {
+        Logs::new(self.clone())
     }
 
     /// Access the actions namespace.
@@ -219,32 +151,13 @@ impl Client {
     pub fn actions(&self) -> Actions {
         Actions::new(self.clone())
     }
-}
 
-/// Convenience wrapper around [`Client::log`] with one method per level.
-pub struct Logger<'a> {
-    client: &'a Client,
-}
-
-macro_rules! level_method {
-    ($name:ident, $level:expr) => {
-        /// Send a log entry at this level. Returns the new log entry's ID.
-        pub async fn $name(
-            &self,
-            message: impl Into<String>,
-            context: Option<serde_json::Value>,
-        ) -> Result<String> {
-            self.client.log($level, message, context).await
-        }
-    };
-}
-
-impl Logger<'_> {
-    level_method!(debug, LogLevel::Debug);
-    level_method!(info, LogLevel::Info);
-    level_method!(notice, LogLevel::Notice);
-    level_method!(warning, LogLevel::Warning);
-    level_method!(error, LogLevel::Error);
-    level_method!(critical, LogLevel::Critical);
-    level_method!(alert, LogLevel::Alert);
+    /// Return a handle bound to the feed with the given slug.
+    ///
+    /// No HTTP happens on construction — an unknown slug only surfaces as
+    /// [`Error::NotFound`](crate::Error::NotFound) when a method is called.
+    #[must_use]
+    pub fn feed(&self, slug: impl Into<String>) -> Feed {
+        Feed::new(self.clone(), slug.into())
+    }
 }

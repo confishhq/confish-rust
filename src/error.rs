@@ -22,6 +22,13 @@ pub enum Error {
         body: Option<serde_json::Value>,
     },
 
+    /// HTTP 404 — the resource doesn't exist (e.g. an unknown feed slug).
+    #[error("HTTP 404: {message}")]
+    NotFound {
+        message: String,
+        body: Option<serde_json::Value>,
+    },
+
     /// HTTP 409 — typically the action is no longer actionable.
     ///
     /// The action consumer silently skips actions that fail to acknowledge with this error.
@@ -111,6 +118,10 @@ pub(crate) fn from_response(
             body: body_value,
         },
         403 => Error::Forbidden {
+            message,
+            body: body_value,
+        },
+        404 => Error::NotFound {
             message,
             body: body_value,
         },
