@@ -170,20 +170,16 @@ fn parse_signature(s: &str) -> Option<(&str, &str)> {
     let mut sig: Option<&str> = None;
     for part in s.split(';') {
         if let Some(value) = part.strip_prefix("ts=") {
-            if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
-                ts = Some(value);
-            } else {
-                return None;
-            }
-        } else if let Some(value) = part.strip_prefix("sig=") {
-            if !value.is_empty() && value.bytes().all(|b| b.is_ascii_hexdigit()) {
-                sig = Some(value);
-            } else {
-                return None;
-            }
+            ts = Some(validated(value, |b| b.is_ascii_digit())?);
         } else {
-            return None;
+            let value = part.strip_prefix("sig=")?;
+            sig = Some(validated(value, |b| b.is_ascii_hexdigit())?);
         }
     }
     Some((ts?, sig?))
+}
+
+/// The value itself when non-empty and every byte passes the check.
+fn validated(value: &str, valid: impl Fn(u8) -> bool) -> Option<&str> {
+    (!value.is_empty() && value.bytes().all(valid)).then_some(value)
 }
