@@ -23,5 +23,9 @@ jobs:
         if: matrix.toolchain == 'stable'
       - run: cargo clippy --all-targets -- -D warnings
         if: matrix.toolchain == 'stable'
+      # The msrv promise covers the library; dev-deps (wiremock) float
+      # ahead of it, so tests run on stable only.
       - run: cargo build --locked --all-features
       - run: cargo test --locked --all-features
+        if: matrix.toolchain == 'stable'
+
