@@ -1,6 +1,6 @@
 # confish
 
-Official Rust SDK for [confish](https://confi.sh) — typed configuration, feeds, actions, and webhook verification.
+Official Rust SDK for [confish](https://confi.sh) — typed configuration, actions, logs, feeds, and webhook verification.
 
 - Async-first, built on `tokio` + `reqwest`
 - Typed configuration via the standard `serde::Deserialize` generic — `client.config().fetch::<MyConfig>().await?`
