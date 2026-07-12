@@ -22,6 +22,7 @@
 //! ```
 
 #![warn(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod actions;
 mod client;
@@ -30,6 +31,8 @@ mod error;
 mod feeds;
 mod http;
 mod logs;
+#[cfg(feature = "tracing")]
+mod tracing_layer;
 mod types;
 
 pub mod webhook;
@@ -39,5 +42,7 @@ pub use client::{Client, ClientBuilder, DEFAULT_BASE_URL};
 pub use config::Config;
 pub use error::{Error, Result};
 pub use feeds::{Feed, FeedItemInput};
-pub use logs::Logs;
+pub use logs::{LogEntryInput, Logs};
+#[cfg(feature = "tracing")]
+pub use tracing_layer::{TracingGuard, TracingLayer, TracingLayerBuilder};
 pub use types::{Action, ActionStatus, ActionUpdate, FeedItem, FeedReplaceResult, LogLevel};

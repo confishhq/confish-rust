@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.0 - 2026-07-12
+
+### Added
+
+- `logs().write_batch(&[LogEntryInput])` — send up to 100 entries in one
+  request (`POST /c/{env}/logs`), returning the new entries' IDs in input
+  order. Each `LogEntryInput` carries a level, message, optional context,
+  and optional ISO 8601 timestamp. More than 100 entries fails fast
+  client-side without making a request; an empty slice sends nothing and
+  returns no IDs. Matches `WriteBatch`/`write_batch`/`writeBatch` in the
+  other confish SDKs. The tracing layer's background sender now flushes
+  through this method.
+- **`tracing` feature (off by default): a native `tracing_subscriber::Layer`**
+  that ships `tracing` events to confish as log entries.
+  `TracingLayer::builder(&client).build()` returns the layer plus a
+  `TracingGuard` and must be called inside a tokio runtime (it spawns the
+  background sender; outside a runtime it fails gracefully with a
+  descriptive error). Events are queued on a bounded in-memory channel
+  (default capacity 1000) without ever blocking or panicking in `on_event`;
+  the background task batches them to the batch logging endpoint — flushing
+  at 50 entries or every 5 seconds, whichever comes first, chunked to at
+  most 100 entries per request, with per-entry timestamps captured at event
+  time. Levels map per RFC 5424: `TRACE`/`DEBUG` → `debug`, `INFO` →
+  `info`, `WARN` → `warning`, `ERROR` → `error`. Event fields become the
+  entry's context object and the `message` field becomes its message; span
+  fields are not captured in this version. On overflow the incoming
+  (newest) event is dropped; `TracingGuard::dropped_count()` reports
+  events dropped at the queue plus entries discarded after delivery
+  failures — errors are never surfaced through `tracing` itself. Dropping
+  the guard flushes with a bounded timeout (default 5 seconds);
+  `guard.shutdown().await` flushes without blocking the runtime. All knobs
+  (`capacity`, `flush_after`, `flush_interval`, `shutdown_timeout`) are on
+  the builder.
+
 ## 0.2.0 - 2026-07-09
 
 Coordinated minor across all five confish SDKs: the new feeds resource,

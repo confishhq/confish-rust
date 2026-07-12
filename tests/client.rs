@@ -1,4 +1,4 @@
-use confish::{Client, Error, LogLevel};
+use confish::{Client, Error, LogEntryInput, LogLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use wiremock::matchers::{header, method, path};
@@ -260,6 +260,84 @@ async fn logs_emergency_level() {
         body,
         json!({"level": "emergency", "message": "everything is on fire"})
     );
+}
+
+#[tokio::test]
+async fn logs_write_batch_sends_entries_and_returns_ids() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/c/env_test/logs"))
+        .and(header("authorization", "Bearer confish_sk_test"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"ids": ["log_1", "log_2"]})))
+        .mount(&server)
+        .await;
+
+    let client = build_client(&server.uri());
+    let ids = client
+        .logs()
+        .write_batch(&[
+            LogEntryInput::new(
+                LogLevel::Info,
+                "Crawl started",
+                Some(json!({"url": "https://example.com/sitemap.xml"})),
+            ),
+            LogEntryInput::new(LogLevel::Error, "Crawl failed", None)
+                .timestamp("2026-07-10T08:30:00Z"),
+        ])
+        .await
+        .expect("write_batch");
+    assert_eq!(ids, ["log_1", "log_2"]);
+
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(
+        body,
+        json!({"entries": [
+            {
+                "level": "info",
+                "message": "Crawl started",
+                "context": {"url": "https://example.com/sitemap.xml"},
+            },
+            {
+                "level": "error",
+                "message": "Crawl failed",
+                "timestamp": "2026-07-10T08:30:00Z",
+            },
+        ]})
+    );
+}
+
+#[tokio::test]
+async fn logs_write_batch_rejects_more_than_100_entries_without_a_request() {
+    // No mock mounted on purpose — no request should ever arrive.
+    let server = MockServer::start().await;
+
+    let client = build_client(&server.uri());
+    let entries: Vec<LogEntryInput> = (0..101)
+        .map(|i| LogEntryInput::new(LogLevel::Info, format!("entry {i}"), None))
+        .collect();
+    let result = client.logs().write_batch(&entries).await;
+    match result {
+        Err(Error::Api {
+            status: 0, message, ..
+        }) => {
+            assert!(message.contains("100"));
+            assert!(message.contains("101"));
+        }
+        other => panic!("expected a client-side error, got {other:?}"),
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn logs_write_batch_with_no_entries_sends_nothing() {
+    let server = MockServer::start().await;
+
+    let client = build_client(&server.uri());
+    let ids = client.logs().write_batch(&[]).await.expect("write_batch");
+    assert!(ids.is_empty());
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]

@@ -136,6 +136,70 @@ let log_id = client.logs().write(LogLevel::Critical, "system down", None).await?
 
 Levels (the full RFC 5424 set): `Debug`, `Info`, `Notice`, `Warning`, `Error`, `Critical`, `Alert`, `Emergency`. Because the levels follow RFC 5424 (syslog), they map cleanly onto the level vocabularies of the `log` and `tracing` crates.
 
+### Batch writes
+
+`write_batch` sends up to 100 entries in a single request and returns their IDs in input order. Each entry carries a level, a message, optional context, and an optional ISO 8601 timestamp — set one to backdate entries you buffered yourself; leave it off and the server stamps the entry on receipt.
+
+```rust
+use confish::{LogEntryInput, LogLevel};
+use serde_json::json;
+
+let ids = client.logs().write_batch(&[
+    LogEntryInput::new(LogLevel::Info, "Crawl started", Some(json!({"pages": 214}))),
+    LogEntryInput::new(LogLevel::Warning, "Two pages timed out", None)
+        .timestamp("2026-07-10T08:30:00Z"),
+]).await?;
+```
+
+More than 100 entries fails fast client-side — no request is made — so chunk larger backfills. An empty slice sends nothing and returns no IDs.
+
+### Use as a `tracing` layer
+
+If you already instrument your code with the [`tracing`](https://docs.rs/tracing) crate, you can ship those events to confish without touching a single call site. Enable the `tracing` feature:
+
+```toml
+[dependencies]
+confish = { version = "0.3", features = ["tracing"] }
+```
+
+Then add the layer to your subscriber stack. Building the layer requires a running tokio runtime (it spawns a background sender), so build it inside `#[tokio::main]` — and hold on to the guard for as long as you log:
+
+```rust
+use confish::TracingLayer;
+use tracing_subscriber::prelude::*;
+
+#[tokio::main]
+async fn main() -> confish::Result<()> {
+    let client = confish::Client::builder("env_id", "confish_sk_...").build()?;
+
+    let (layer, guard) = TracingLayer::builder(&client).build()?;
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(layer)
+        .init();
+
+    tracing::info!(job = "db-backup", "Job started");
+    tracing::warn!(url = "https://example.com/sitemap.xml", attempt = 2, "Crawl retrying");
+    tracing::error!(incident = "inc-42", "Health check failed");
+
+    // ... run your workload ...
+
+    guard.shutdown().await; // flush everything before exiting
+    Ok(())
+}
+```
+
+How it behaves:
+
+- **Non-blocking.** Emitting an event only pushes onto a bounded in-memory queue (default capacity 1000) — it never blocks and never panics. A background task batches entries and sends them: at 50 entries or every 5 seconds, whichever comes first, chunked to at most 100 entries per request.
+- **Level mapping.** `tracing` has five levels, confish follows RFC 5424: `TRACE` → `debug`, `DEBUG` → `debug`, `INFO` → `info`, `WARN` → `warning`, `ERROR` → `error`.
+- **Fields become context.** `info!(job = "db-backup", attempt = 2, "Job started")` produces the message `Job started` with context `{"job": "db-backup", "attempt": 2}`. Timestamps are captured when you emit the event, not when the batch is sent. Span fields are not captured in this version — event fields only.
+- **Overflow drops the newest.** When the queue is full the incoming event is dropped rather than blocking you; `guard.dropped_count()` tells you how many went missing.
+- **Errors never come back.** Delivery failures are retried per the client's retry policy, then counted in `dropped_count()` and discarded — the layer never emits `tracing` events of its own, so it can't feed back into itself.
+- **Shutdown.** Dropping the guard flushes whatever is buffered, blocking for at most `shutdown_timeout` (default 5 seconds). On a current-thread runtime prefer `guard.shutdown().await`, which flushes without blocking the runtime.
+
+Tune the knobs on the builder: `capacity`, `flush_after`, `flush_interval`, and `shutdown_timeout`.
+
 ## Actions
 
 The action consumer polls for pending actions, acknowledges them, runs your handler, and reports completion or failure — including idempotent skip if another consumer claimed the action first.
